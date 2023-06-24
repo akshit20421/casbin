@@ -14,22 +14,24 @@
 
 package cache
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
-type cacheItem struct {
-	value     bool
-	expiresAt time.Time
-	ttl       time.Duration
+type SyncCache struct {
+	cache DefaultCache
+	sync.RWMutex
 }
 
-type DefaultCache map[string]cacheItem
-
-func (c *DefaultCache) Set(key string, value bool, extra ...interface{}) error {
+func (c *SyncCache) Set(key string, value bool, extra ...interface{}) error {
 	ttl := time.Duration(-1)
 	if len(extra) > 0 {
 		ttl = extra[0].(time.Duration)
 	}
-	(*c)[key] = cacheItem{
+	c.Lock()
+	defer c.Unlock()
+	c.cache[key] = cacheItem{
 		value:     value,
 		expiresAt: time.Now().Add(ttl),
 		ttl:       ttl,
@@ -37,33 +39,48 @@ func (c *DefaultCache) Set(key string, value bool, extra ...interface{}) error {
 	return nil
 }
 
-func (c *DefaultCache) Get(key string) (bool, error) {
-	if res, ok := (*c)[key]; !ok {
+func (c *SyncCache) Get(key string) (bool, error) {
+	c.RLock()
+	res, ok := c.cache[key]
+	c.RUnlock()
+	if !ok {
 		return false, ErrNoSuchKey
 	} else {
 		if res.ttl > 0 && time.Now().After(res.expiresAt) {
-			delete(*c, key)
+			c.Lock()
+			defer c.Unlock()
+			delete(c.cache, key)
 			return false, ErrNoSuchKey
 		}
 		return res.value, nil
 	}
 }
 
-func (c *DefaultCache) Delete(key string) error {
-	if _, ok := (*c)[key]; !ok {
+func (c *SyncCache) Delete(key string) error {
+	c.RLock()
+	_, ok := c.cache[key]
+	c.RUnlock()
+	if !ok {
 		return ErrNoSuchKey
 	} else {
-		delete(*c, key)
+		c.Lock()
+		defer c.Unlock()
+		delete(c.cache, key)
 		return nil
 	}
 }
 
-func (c *DefaultCache) Clear() error {
-	*c = make(DefaultCache)
+func (c *SyncCache) Clear() error {
+	c.Lock()
+	c.cache = make(DefaultCache)
+	c.Unlock()
 	return nil
 }
 
-func NewDefaultCache() (Cache, error) {
-	cache := make(DefaultCache)
+func NewSyncCache() (Cache, error) {
+	cache := SyncCache{
+		make(DefaultCache),
+		sync.RWMutex{},
+	}
 	return &cache, nil
 }

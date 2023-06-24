@@ -15,10 +15,11 @@
 package casbin
 
 import (
-	"github.com/casbin/casbin/v2/constant"
+	"log"
 	"sort"
 	"testing"
 
+	"github.com/casbin/casbin/v2/constant"
 	"github.com/casbin/casbin/v2/errors"
 	"github.com/casbin/casbin/v2/util"
 )
@@ -42,7 +43,7 @@ func testGetUsers(t *testing.T, e *Enforcer, res []string, name string, domain .
 	switch err {
 	case nil:
 		break
-	case errors.ERR_NAME_NOT_FOUND:
+	case errors.ErrNameNotFound:
 		t.Log("No name found")
 	default:
 		t.Error("Users for ", name, " could not be fetched: ", err.Error())
@@ -541,4 +542,107 @@ func TestCustomizedFieldIndex(t *testing.T) {
 		t.Fatalf("DeleteRole: %v", err)
 	}
 	testEnforce(t, e, "bob", "data2", "write", false)
+}
+
+func testGetAllowedObjectConditions(t *testing.T, e *Enforcer, user string, act string, prefix string, res []string, expectedErr error) {
+	myRes, actualErr := e.GetAllowedObjectConditions(user, act, prefix)
+
+	if actualErr != expectedErr {
+		t.Error("actual Err: ", actualErr, ", supposed to be ", expectedErr)
+	}
+	if actualErr == nil {
+		log.Print("Policy: ", myRes)
+		if !util.ArrayEquals(res, myRes) {
+			t.Error("Policy: ", myRes, ", supposed to be ", res)
+		}
+	}
+}
+
+func TestGetAllowedObjectConditions(t *testing.T) {
+	e, _ := NewEnforcer("examples/object_conditions_model.conf", "examples/object_conditions_policy.csv")
+	testGetAllowedObjectConditions(t, e, "alice", "read", "r.obj.", []string{"price < 25", "category_id = 2"}, nil)
+	testGetAllowedObjectConditions(t, e, "admin", "read", "r.obj.", []string{"category_id = 2"}, nil)
+	testGetAllowedObjectConditions(t, e, "bob", "write", "r.obj.", []string{"author = bob"}, nil)
+
+	// test ErrEmptyCondition
+	testGetAllowedObjectConditions(t, e, "alice", "write", "r.obj.", []string{}, errors.ErrEmptyCondition)
+	testGetAllowedObjectConditions(t, e, "bob", "read", "r.obj.", []string{}, errors.ErrEmptyCondition)
+
+	// test ErrObjCondition
+	// should : e.AddPolicy("alice", "r.obj.price > 50", "read")
+	ok, _ := e.AddPolicy("alice", "price > 50", "read")
+	if ok {
+		testGetAllowedObjectConditions(t, e, "alice", "read", "r.obj.", []string{}, errors.ErrObjCondition)
+	}
+
+	// test prefix
+	e.ClearPolicy()
+	err := e.GetRoleManager().DeleteLink("alice", "admin")
+	if err != nil {
+		panic(err)
+	}
+	ok, _ = e.AddPolicies([][]string{
+		{"alice", "r.book.price < 25", "read"},
+		{"admin", "r.book.category_id = 2", "read"},
+		{"bob", "r.book.author = bob", "write"},
+	})
+	if ok {
+		testGetAllowedObjectConditions(t, e, "alice", "read", "r.book.", []string{"price < 25"}, nil)
+		testGetAllowedObjectConditions(t, e, "admin", "read", "r.book.", []string{"category_id = 2"}, nil)
+		testGetAllowedObjectConditions(t, e, "bob", "write", "r.book.", []string{"author = bob"}, nil)
+	}
+}
+
+func testGetImplicitUsersForResource(t *testing.T, e *Enforcer, res [][]string, resource string, domain ...string) {
+	t.Helper()
+	myRes, err := e.GetImplicitUsersForResource(resource)
+	if err != nil {
+		panic(err)
+	}
+
+	if !util.Set2DEquals(res, myRes) {
+		t.Error("Implicit users for ", resource, "in domain ", domain, " : ", myRes, ", supposed to be ", res)
+	} else {
+		t.Log("Implicit users for ", resource, "in domain ", domain, " : ", myRes)
+	}
+}
+
+func TestGetImplicitUsersForResource(t *testing.T) {
+	e, _ := NewEnforcer("examples/rbac_model.conf", "examples/rbac_policy.csv")
+	testGetImplicitUsersForResource(t, e, [][]string{{"alice", "data1", "read"}}, "data1")
+	testGetImplicitUsersForResource(t, e, [][]string{{"bob", "data2", "write"},
+		{"alice", "data2", "read"},
+		{"alice", "data2", "write"}}, "data2")
+
+	// test duplicate permissions
+	_, _ = e.AddGroupingPolicy("alice", "data2_admin_2")
+	_, _ = e.AddPolicies([][]string{{"data2_admin_2", "data2", "read"}, {"data2_admin_2", "data2", "write"}})
+	testGetImplicitUsersForResource(t, e, [][]string{{"bob", "data2", "write"},
+		{"alice", "data2", "read"},
+		{"alice", "data2", "write"}}, "data2")
+}
+
+func testGetImplicitUsersForResourceByDomain(t *testing.T, e *Enforcer, res [][]string, resource string, domain string) {
+	t.Helper()
+	myRes, err := e.GetImplicitUsersForResourceByDomain(resource, domain)
+	if err != nil {
+		panic(err)
+	}
+
+	if !util.Set2DEquals(res, myRes) {
+		t.Error("Implicit users for ", resource, "in domain ", domain, " : ", myRes, ", supposed to be ", res)
+	} else {
+		t.Log("Implicit users for ", resource, "in domain ", domain, " : ", myRes)
+	}
+}
+
+func TestGetImplicitUsersForResourceByDomain(t *testing.T) {
+	e, _ := NewEnforcer("examples/rbac_with_domains_model.conf", "examples/rbac_with_domains_policy.csv")
+	testGetImplicitUsersForResourceByDomain(t, e, [][]string{{"alice", "domain1", "data1", "read"},
+		{"alice", "domain1", "data1", "write"}}, "data1", "domain1")
+
+	testGetImplicitUsersForResourceByDomain(t, e, [][]string{}, "data2", "domain1")
+
+	testGetImplicitUsersForResourceByDomain(t, e, [][]string{{"bob", "domain2", "data2", "read"},
+		{"bob", "domain2", "data2", "write"}}, "data2", "domain2")
 }
